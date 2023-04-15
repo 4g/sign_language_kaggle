@@ -3,11 +3,7 @@ import random
 from tqdm import tqdm
 import modellib
 import generator
-from keras.optimizers import adam_v2
 from tensorflow import keras
-
-def scheduler(epoch, lr):
-    return 0.0003 * (0.3 ** (epoch//30))
 
 def train(data_dir, model_path):
     gen = generator.BinaryGenerator(data_dir,
@@ -16,7 +12,7 @@ def train(data_dir, model_path):
                                     shuffle=False,
                                     augment=False,
                                     oversample=False,
-                                    split_start=0.8,
+                                    split_start=0.9,
                                     split_end=1.0,
                                     cache=False)
 
@@ -27,7 +23,8 @@ def train(data_dir, model_path):
     for xb, yb in tqdm(gen):
         results = model.predict(xb, verbose=False)
         ypred = np.argmax(results, axis=1)
-        correct += sum(ypred == yb)
+        ytrue = np.argmax(yb, axis=1)
+        correct += sum(ypred == ytrue)
         total += len(ypred)
     print(correct, total, correct/total)
 

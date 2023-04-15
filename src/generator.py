@@ -14,6 +14,8 @@ import numpy as np
 from tqdm import tqdm
 from scipy import interpolate
 
+from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms
+
 class BinaryGenerator(tf.keras.utils.Sequence):
     def __init__(self,
                  data_dir,
@@ -82,13 +84,14 @@ class BinaryGenerator(tf.keras.utils.Sequence):
     def load_data(self, data_dir):
         self.X = []
         self.labels = []
-        self.n_points = 153*2
+        self.n_points = 154*2
         
         data_dir = Path(data_dir)
         npy_dir = data_dir / "train_npy"
         training_csv = data_dir / "train.csv"
         train_data = pd.read_csv(training_csv)
         label_map = json.load(open(data_dir / "sign_to_prediction_index_map.json"))
+        self.num_classes = len(label_map)
         
         participants = train_data.participant_id.unique()
         # random.shuffle(participants)
@@ -116,14 +119,17 @@ class BinaryGenerator(tf.keras.utils.Sequence):
 
     def __getitem__(self, n: int) -> Tuple[np.ndarray, np.ndarray]:
         indices = self.indices[n * self.batch_size: n * self.batch_size + self.batch_size]
-        x_batch = np.zeros((self.batch_size, self.step_size, self.n_points), dtype=np.float32)
-        y_batch = np.zeros(self.batch_size, dtype=np.float32)
+        x_batch = np.zeros((self.batch_size, self.step_size, self.n_points), dtype=np.float16)
+        y_batch = np.zeros((self.batch_size, self.num_classes), dtype=np.float16)
+        # y_batch = np.zeros(self.batch_size, dtype=np.float16)
         
+
         for index, rindex in enumerate(indices):
             sample = self.preprocess(self.X[rindex])
             x_batch[index] = sample
-            y_batch[index] = self.labels[rindex]
-    
+            y_batch[index][self.labels[rindex]] = 1.0
+            # y_batch[index] = self.labels[rindex]
+
         return (x_batch, y_batch)
     
 
@@ -147,7 +153,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         if len(arr) == 1:
             arr = arr * size
             return arr
-        
+            
         old_size = len(arr)
         x = np.linspace(0, 1, num=old_size)
         f = interpolate.interp1d(x=x, y=arr)
@@ -155,19 +161,6 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         new_arr = f(new_points)
 
         return new_arr
-
-  
-
-    @staticmethod
-    def do_normalise_by_ref(xyz, n_refs=7):
-        ref = xyz[:,-n_refs:,:]
-        K = ref.shape[-1]
-        xyz_flat = ref.reshape(-1,K)
-        m = np.nanmean(xyz_flat,0).reshape(1,1,K)
-        s = np.nanstd(xyz_flat, 0).mean()
-        xyz = xyz - m
-        xyz = xyz / s
-        return xyz
 
     def extract_relevant_parts(self, kps):
         LIP = [
@@ -189,7 +182,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
 
         LHAND = list(range(468, 489))
         RHAND = list(range(522, 543))
-        POSE = list(range(489, 521))
+        POSE = list(range(489, 522))
 
         # left wrist, right wrist, nose, left eye, right eye, 
         # REFS = [489+15, 489+16, 489, 489+2, 489+5]
@@ -210,52 +203,69 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         return kps
 
 
+    @staticmethod
+    def do_normalise_by_ref(xyz, n_refs=7):
+        ref = xyz[:,-n_refs:,:]
+        K = ref.shape[-1]
+        xyz_flat = ref.reshape(-1,K)
+        m = np.nanmean(xyz_flat,0).reshape(1,1,K)
+        s = np.nanstd(xyz_flat, 0).mean()
+        xyz = xyz - m
+        xyz = xyz / s
+        return xyz
+
     def preprocess(self, path):
        
         if path not in self.cache:
             kps = np.load(path)
+            kps = kps[:,:,0:2]
             self.cache[path] = kps.astype(np.float16)
         
         kps = self.cache[path]
         
-        if self.augment and random.random() < 0.25:
+        aug_perc = 0.35
+        if self.augment and random.random() < aug_perc:
             idx = random.sample(list(range(len(kps))), min(self.step_size, len(kps)))
             if len(idx) < self.step_size:
                 idx = self.reflect_pad(idx, self.step_size)
 
         else:
             idx = np.linspace(0, len(kps), self.step_size, endpoint=False, dtype=int)
-        
+            center = len(kps)//2
+            start_idx = center - self.step_size//2
+            end_idx = start_idx + self.step_size
+            start_idx = max(0, start_idx)
+            end_idx = min(end_idx, len(kps))
+            idx = np.linspace(start_idx, end_idx, self.step_size, endpoint=False, dtype=int) 
+
         kps = kps[idx]
         
         # reverse the video
-        if self.augment and random.random() < 0.25:
+        if self.augment and random.random() < aug_perc:
             kps = kps[::-1]
+
         
-        
+        gr = lambda x : (np.random.random() - .5)*2*x
+
+        aug = 0.3
+
+        if self.augment and random.random() < aug_perc * 2:
+            kps = hflip(kps)
+            kps = shift(kps, hratio=gr(aug), vratio=gr(aug))
+            affines = [rotate(gr(aug)), zoom(gr(aug), gr(aug)), shear(gr(aug), gr(aug))]
+
+            # affines = [rotate(get_random(0.2))]
+            if random.random() < aug_perc:
+                kps = apply_affine_transforms(kps, affines)
+
         kps = self.extract_relevant_parts(kps)
-        # kps = self.do_normalise_by_ref(kps)
+        kps = self.do_normalise_by_ref(kps)
+
         self.n_points = kps.shape[1] * 2
         kps = np.nan_to_num(kps, nan=0.0)
         kps = np.reshape(kps, (-1, self.n_points))
         
-        # horizontally flip
-        # if self.augment and random.random() < 0.5:
-        #     kps = 1 - kps
 
-        # rotate
-        
-        # if self.augment:
-        #     if len(kps) < self.step_size:
-        #         r = random.random() 
-        #         if r < 0.25:
-        #             idx = list(range(len(kps)))
-        #             idx = self.reflect_pad(idx, self.step_size)
-        #             kps = kps[idx]
-
-        #         elif r > 0.75:
-        #             kps = cv2.resize(kps.astype(np.float32), (self.n_points, self.step_size))
-        
         if not self.enable_cache:
             self.cache = {}
         return kps
@@ -292,20 +302,21 @@ if __name__ == "__main__":
 
     generator = BinaryGenerator(
         args.data_dir,
-        batch_size=1,
+        batch_size=256,
         step_size=64,
-        shuffle=False,
-        augment=False,
-        oversample=False
+        shuffle=True,
+        augment=True,
+        oversample=True
     )
 
     print(f"Len of Data Generator {len(generator)}")
 
     for x, y in tqdm(generator):
-        for frame in x[0]:
-            print(y[0], generator.index_to_label[int(y[0])])
-            img =  draw_points(frame)
-            cv2.imshow("image", img)
-            cv2.waitKey(-1)
-        # print(x.shape)
+        pass
+        # for frame in x[0]:
+        #     # print(y[0], generator.index_to_label[int(y[0])])
+        #     img =  draw_points(frame)
+        #     cv2.imshow("image", img)
+        #     cv2.waitKey(-1)
+        # # print(x.shape)
         # print(y.shape)

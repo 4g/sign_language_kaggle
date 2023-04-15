@@ -1,8 +1,15 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
+
+
+
+from tensorflow.keras import mixed_precision
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_global_policy(policy)
+
 
 import numpy as np
 import random
@@ -12,31 +19,9 @@ import generator
 from tensorflow import keras
 import datetime
 
-def scheduler(epoch, lr):
-    if epoch < 10:
-        lr = 0.003
-    
-    elif epoch < 60:
-        lr = 0.0003
-    
-    elif epoch < 120:
-        lr = 0.0001
-
-    elif epoch < 1:
-        lr = 0.0001
-    
-    elif epoch < 160:
-        lr = 0.00005
-    
-    else:
-        lr = 0.00001
-    
-    return lr
-
-
 def train(data_dir, output):
     step_size = 64
-    batch_size = 1024
+    batch_size = 256
 
     train_gen = generator.BinaryGenerator(data_dir,
                                             batch_size=batch_size,
@@ -58,56 +43,67 @@ def train(data_dir, output):
 
     
     METRICS = [
-      keras.metrics.SparseCategoricalAccuracy(name='sparse_categorical_accuracy'),
+      keras.metrics.CategoricalAccuracy(name='accuracy'),
     ]
 
     # norm_layer = keras.layers.Normalization(axis=-1)
     # norm_layer.adapt(train_gen)
 
+    embed_dim = 384
     
     model = modellib.build_model(
-        embed_dim=128,
+        embed_dim=embed_dim,
         input_shape=(step_size, train_gen.n_points),
-        head_size=128,
+        head_size=embed_dim,
         num_heads=4,
-        ff_dim=128,
+        ff_dim=embed_dim,
         num_transformer_blocks=1,
-        mlp_units=[512],
+        mlp_units=[embed_dim],
         mlp_dropout=0.4,
         dropout=0.25,
         n_classes=250
     )
  
 
-    model.compile(optimizer=keras.optimizers.Adam(0.0001),
-                  loss=keras.losses.sparse_categorical_crossentropy,
+    model.compile(optimizer=keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=0.004),
+                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
                   metrics=METRICS)
 
     model.summary()
 
-    lr_scheduler = keras.callbacks.LearningRateScheduler(scheduler)
-    
+    # lr_scheduler = keras.callbacks.LearningRateScheduler(scheduler)
+    # v = [scheduler(i) for i in range(1000)]
+    # print(v)
+
     log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     board = keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
     
-    reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='val_sparse_categorical_accuracy',
+    reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='val_accuracy',
                                                      factor=0.5,
                                                      patience=15,
-                                                     min_lr=2e-4)
+                                                     min_lr=2e-5)
     
     checkpoint_filepath = f"{output}/" + "model_{epoch}/"
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath)
 
-    # tmp = keras.models.load_model(f"model_large_2/model_199")
+    # model = keras.models.load_model(f"15_04/model_198/")
+    #
+    # model.compile(optimizer=keras.optimizers.Adam(0.00001, weight_decay=0.0004),
+    #               loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
+    #               metrics=METRICS)
+    
     # tmp.save_weights("/tmp/weights.hdf5")
 
     # model.load_weights("/tmp/weights.hdf5")
 
     model.fit(train_gen,
              validation_data=val_gen,
-             epochs=100,
+             epochs=200,
              shuffle=True,
-             callbacks=[reduce_lr, board, checkpoint])
+             callbacks=[reduce_lr,board, checkpoint],
+              use_multiprocessing=True,
+              workers=4
+             )
 
     model.save(f"{output}")
     # model = keras.models.load_model(f"{output}")
