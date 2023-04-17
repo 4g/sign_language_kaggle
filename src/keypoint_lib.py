@@ -17,6 +17,28 @@ def get_part_ranges():
     
     return x
 
+def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index):
+    keypoints = keypoints.copy()
+    
+    desired_shoulder_length = 1.0
+
+    for frame_index in range(len(keypoints)):
+        lshoulder = keypoints[frame_index, lshoulder_index, :]
+        rshoulder = keypoints[frame_index, rshoulder_index, :]
+        shoulder_length = np.linalg.norm(lshoulder - rshoulder)
+        
+        resize_ratio = desired_shoulder_length/shoulder_length
+        
+        keypoints[frame_index] *= resize_ratio
+
+        lshoulder = keypoints[frame_index, lshoulder_index, :]
+        rshoulder = keypoints[frame_index, rshoulder_index, :]
+        shoulder_center = (lshoulder + rshoulder) / 2
+        keypoints[frame_index] = keypoints[frame_index] - shoulder_center
+
+    # keypoints += 0.5
+    return keypoints
+
 def hflip(keypoints):
     left_hand_points = list(range(468, 489))
     right_hand_points = list(range(522, 543))
@@ -53,6 +75,7 @@ def apply_affine_transforms(keypoints, transforms):
     keypoints = np.reshape(keypoints, (-1, 2))
     keypoints = keypoints * 512
     keypoints = np.concatenate([keypoints, np.ones((len(keypoints), 1), dtype=np.float32)], axis=-1)
+
 
     for M in transforms:
         keypoints = M.dot(keypoints.T)
@@ -143,12 +166,14 @@ if __name__ == "__main__":
 
         gr = lambda x : (np.random.random() - .5)*2*x
 
-        # rot_kps = hflip(allkps)
-        # rot_kps = shift(rot_kps, hratio=get_random(0.2), vratio=get_random(0.2))
+        rot_kps = hflip(allkps)
+        rot_kps = shift(rot_kps, hratio=gr(0.2), vratio=gr(0.2))
         affines = [rotate(gr(.1)), zoom(gr(.1), gr(.1)), shear(gr(.1), gr(.1))]
         # affines = [zoom(0.2, 0.2)]
-        rot_kps = allkps
+        # rot_kps = allkps
         rot_kps = apply_affine_transforms(rot_kps, affines)
+
+        rot_kps = normalize_by_shoulders(keypoints=rot_kps)
         
 
         for index, kps in enumerate(allkps):

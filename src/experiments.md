@@ -53,7 +53,7 @@ Results
     - how to train transforfmers https://kikaben.com/transformers-training-details/
 
     - increasing emb dim makes it to .69 : .63
-    - increasing video length makes it train very fast
+    - increasing video length makes it train very fast (or maybe its reduced keypoints)
     - large model with augs and normalization : 0.8, 0.67
     - lets make better normalization !!!!
 
@@ -65,8 +65,27 @@ Results
     - do an end to end submission (separate keypoint extraction + normalization outside)
 
 TODO
-    - temporal center crop
+    - temporal center crop + 
     - AI4BHARAT OPEN HANDS GOLDEN PAPER (aug, norm, massive dataset): https://arxiv.org/pdf/2110.05877.pdf
-    - normalize with some fixed body points like shoulders or neck to be at center of video
-    - shear transform
-    - smaller set of keypoints
+    - normalize with some fixed body points like shoulders or neck to be at center of video + 
+    - shear transform +
+    - smaller set of keypoints + 
+
+changing val makes accuracy .82 : .70 at 90 epochs.
+
+Things to do with dates
+1. Refactor code slightly - 4
+2. write script to visualize errors and test model on live camera - 3
+3. + Better Normalization - 0
+4. + remove frames with both hands as NA ???
+5. separate NA parts and give them separate embeddings - 1
+6. better embedder for keypoints before sending them to attention layer
+7. + chose keypoints - 2
+8. experiment with larger network
+9. external dataset
+
+16/04 -- 
+10. distance, angles etc features
+11. determine misperforming classes
+12. larger embedding layer
+13. give separate embedding to NA

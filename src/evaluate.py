@@ -1,3 +1,10 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+import absl.logging
+absl.logging.set_verbosity(absl.logging.ERROR)
+
+
 import numpy as np
 import random
 from tqdm import tqdm
@@ -12,9 +19,10 @@ def train(data_dir, model_path):
                                     shuffle=False,
                                     augment=False,
                                     oversample=False,
-                                    split_start=0.9,
-                                    split_end=1.0,
-                                    cache=False)
+                                    split_start=0.0,
+                                    split_end=0.1,
+                                    cache=False,
+                                    mode='val')
 
     model = keras.models.load_model(f"{model_path}")
     correct = 0

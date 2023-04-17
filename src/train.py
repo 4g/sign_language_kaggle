@@ -17,7 +17,35 @@ from tqdm import tqdm
 import modellib
 import generator
 from tensorflow import keras
+import tensorflow as tf
 import datetime
+
+class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, d_model, warmup_steps=4000):
+        super().__init__()
+
+        self.d_model = d_model
+        self.d_model = tf.cast(self.d_model, tf.float32)
+
+        self.warmup_steps = warmup_steps
+
+    def __call__(self, step):
+        step = tf.cast(step, dtype=tf.float32)
+        arg1 = tf.math.rsqrt(step)
+        arg2 = step * (self.warmup_steps ** -1.5)
+
+        return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
+
+    def get_config(self):
+        return {"d_model": self.d_model.numpy(), "warmup_steps": self.warmup_steps}
+
+    # There's actually no need to define `from_config` here, since returning
+    # `cls(**config)` is the default behavior.
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+
 
 def train(data_dir, output):
     step_size = 64
@@ -29,8 +57,8 @@ def train(data_dir, output):
                                             shuffle=True,
                                             augment=True,
                                             oversample=True,
-                                            split_start=0,
-                                            split_end=0.9)
+                                            split_start=0.1,
+                                            split_end=1.0)
     
     val_gen = generator.BinaryGenerator(data_dir,
                                             batch_size=batch_size,
@@ -38,8 +66,8 @@ def train(data_dir, output):
                                             shuffle=False,
                                             augment=False,
                                             oversample=False,
-                                            split_start=0.9,
-                                            split_end=1.0)
+                                            split_start=0.0,
+                                            split_end=0.1)
 
     
     METRICS = [
@@ -49,24 +77,30 @@ def train(data_dir, output):
     # norm_layer = keras.layers.Normalization(axis=-1)
     # norm_layer.adapt(train_gen)
 
-    embed_dim = 384
+    embed_dim = 512
     
     model = modellib.build_model(
         embed_dim=embed_dim,
         input_shape=(step_size, train_gen.n_points),
         head_size=embed_dim,
         num_heads=4,
-        ff_dim=embed_dim,
+        ff_dim=embed_dim*2,
         num_transformer_blocks=1,
         mlp_units=[embed_dim],
         mlp_dropout=0.4,
         dropout=0.25,
-        n_classes=250
+        n_classes=250,
+        layer_norm=True
     )
- 
+    
+    optimizer = keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=0.004)
 
-    model.compile(optimizer=keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=0.004),
-                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
+    learning_rate = CustomSchedule(embed_dim)
+    optimizer = tf.keras.optimizers.AdamW(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9, weight_decay=0.004)
+    
+
+    model.compile(optimizer=optimizer,
+                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.75),
                   metrics=METRICS)
 
     model.summary()
@@ -86,7 +120,7 @@ def train(data_dir, output):
     checkpoint_filepath = f"{output}/" + "model_{epoch}/"
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath)
 
-    # model = keras.models.load_model(f"15_04/model_198/")
+    # model = keras.models.load_model(f"16_04/model_55/")
     #
     # model.compile(optimizer=keras.optimizers.Adam(0.00001, weight_decay=0.0004),
     #               loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),

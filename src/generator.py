@@ -14,7 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from scipy import interpolate
 
-from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms
+from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms, normalize_by_shoulders
 
 class BinaryGenerator(tf.keras.utils.Sequence):
     def __init__(self,
@@ -26,7 +26,8 @@ class BinaryGenerator(tf.keras.utils.Sequence):
                  split_end=1.0,
                  oversample=True,
                  augment=True,
-                 cache=True
+                 cache=True,
+                 mode='train'
                  ):
 
         self.X = None
@@ -34,6 +35,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         self.labels = None
         self.split_start = split_start
         self.split_end = split_end
+        self.mode = mode
 
 
         self.batch_size = batch_size
@@ -84,7 +86,9 @@ class BinaryGenerator(tf.keras.utils.Sequence):
     def load_data(self, data_dir):
         self.X = []
         self.labels = []
-        self.n_points = 154*2
+        self.make_relevant_parts()
+        # self.n_points = len(self.relevant_indices)*2
+        self.n_points = 190
         
         data_dir = Path(data_dir)
         npy_dir = data_dir / "train_npy"
@@ -162,50 +166,46 @@ class BinaryGenerator(tf.keras.utils.Sequence):
 
         return new_arr
 
+    def make_relevant_parts(self):
+        self.LHAND = list(range(468, 489))
+        self.RHAND = list(range(522, 543))
+        self.POSE = list(range(489, 522))
+        self.SHOULDERS = [500, 501]
+        self.ELBOWS = [502, 503]
+        
+        self.LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 
+                    78, 95, 88, 178, 87, 14, 317, 402, 318, 324]
+        
+
+        # self.LIP = [82, 13, 
+        #             87, 14]
+        
+        self.REYE = [
+            145, 153,
+            158, 157,
+        ]
+
+        self.LEYE = [
+            374, 380,
+            385, 384
+        ]
+        
+        self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.LHAND, self.RHAND, self.SHOULDERS, self.ELBOWS]
+
+        self.relevant_indices = []
+        for part in self.relevant_parts:
+            self.relevant_indices += part
+
+
     def extract_relevant_parts(self, kps):
-        LIP = [
-                61, 185, 40, 39, 37, 0, 267, 269, 270, 409,
-                291, 146, 91, 181, 84, 17, 314, 405, 321, 375,
-                78, 191, 80, 81, 82, 13, 312, 311, 310, 415,
-                95, 88, 178, 87, 14, 317, 402, 318, 324, 308,
-        ]       
-
-        REYE = [
-            33, 7, 163, 144, 145, 153, 154, 155, 133,
-            246, 161, 160, 159, 158, 157, 173,
-        ]
-
-        LEYE = [
-            263, 249, 390, 373, 374, 380, 381, 382, 362,
-            466, 388, 387, 386, 385, 384, 398,
-        ]
-
-        LHAND = list(range(468, 489))
-        RHAND = list(range(522, 543))
-        POSE = list(range(489, 522))
-
-        # left wrist, right wrist, nose, left eye, right eye, 
-        # REFS = [489+15, 489+16, 489, 489+2, 489+5]
-
-        REFS = [500, 501, 512, 513, 159,  386, 13]
-        
         kps = kps[:, :, 0:2]
-
-        lip = kps[:, LIP, :]
-        lhand = kps[:, LHAND, :]
-        rhand = kps[:, RHAND, :]
-        pose = kps[:,POSE, :]
-        leye = kps[:, LEYE, :]
-        reye = kps[:, REYE, :]
-        refs = kps[:, REFS, :]
-        
-        kps = np.concatenate([lip,leye, reye, lhand, rhand, pose, refs], axis=1)    
+        kps = kps[:, self.relevant_indices, :]
         return kps
 
 
     @staticmethod
-    def do_normalise_by_ref(xyz, n_refs=7):
-        ref = xyz[:,-n_refs:,:]
+    def do_normalise_by_ref(xyz):
+        ref = xyz[:,500:502,:]
         K = ref.shape[-1]
         xyz_flat = ref.reshape(-1,K)
         m = np.nanmean(xyz_flat,0).reshape(1,1,K)
@@ -224,19 +224,45 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         kps = self.cache[path]
         
         aug_perc = 0.35
-        if self.augment and random.random() < aug_perc:
-            idx = random.sample(list(range(len(kps))), min(self.step_size, len(kps)))
-            if len(idx) < self.step_size:
-                idx = self.reflect_pad(idx, self.step_size)
 
+        nonna_kps = []
+        # print("-----")
+        for i, frame in enumerate(kps):
+            # print(frame[self.LHAND][0][0], frame[self.RHAND][0][0])
+            lna = np.isnan(frame[self.LHAND][0][0])
+            rna = np.isnan(frame[self.RHAND][0][0])
+            if lna and rna:
+                continue
+            nonna_kps.append(i)
+        
+        kps = kps[nonna_kps]
+
+        if self.augment and random.random() < aug_perc*2:
+            if random.random() < 0.5:
+                idx = random.sample(list(range(len(kps))), min(self.step_size, len(kps)))
+                # if len(idx) < self.step_size:
+                #     idx = self.reflect_pad(idx, self.step_size)
+                idx = np.linspace(min(idx), max(idx), self.step_size, endpoint=True, dtype=int)
+
+            else:
+                center = len(kps)//2
+                start_idx = center - self.step_size//2
+                end_idx = start_idx + self.step_size
+                start_idx = max(0, start_idx)
+                end_idx = min(end_idx, len(kps))
+                idx = np.linspace(start_idx, end_idx, self.step_size, endpoint=False, dtype=int)
         else:
             idx = np.linspace(0, len(kps), self.step_size, endpoint=False, dtype=int)
+        
+        if self.mode == 'val':
             center = len(kps)//2
             start_idx = center - self.step_size//2
             end_idx = start_idx + self.step_size
             start_idx = max(0, start_idx)
             end_idx = min(end_idx, len(kps))
-            idx = np.linspace(start_idx, end_idx, self.step_size, endpoint=False, dtype=int) 
+            idx = np.linspace(start_idx, end_idx, self.step_size, endpoint=False, dtype=int)
+
+            
 
         kps = kps[idx]
         
@@ -257,18 +283,31 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             # affines = [rotate(get_random(0.2))]
             if random.random() < aug_perc:
                 kps = apply_affine_transforms(kps, affines)
+        
+        if self.mode == 'val':
+            kps = hflip(kps)
+
+        kps = normalize_by_shoulders(kps, lshoulder_index=500, rshoulder_index=501)
+        angles = []
+        langles = self.angles_between(kps[:,self.LHAND,:])
+        rangles = self.angles_between(kps[:,self.RHAND,:])
+        angles = np.concatenate([langles, rangles], axis=-1)
 
         kps = self.extract_relevant_parts(kps)
-        kps = self.do_normalise_by_ref(kps)
 
-        self.n_points = kps.shape[1] * 2
-        kps = np.nan_to_num(kps, nan=0.0)
-        kps = np.reshape(kps, (-1, self.n_points))
+        kps = np.reshape(kps, (-1, kps.shape[1] * 2))
         
-
         if not self.enable_cache:
             self.cache = {}
+        
+        kps = np.concatenate([kps, angles], axis=-1)
+        kps = np.nan_to_num(kps, nan=0.0)
         return kps
+
+    def angles_between(self, kps):
+        angles = np.arctan2(np.diff(kps[:, :, 1], axis=1), np.diff(kps[:, :, 0], axis=1))
+        angles = np.concatenate([angles, np.zeros((angles.shape[0], 1))], axis=1)
+        return angles
 
     def on_epoch_end(self):
         """
@@ -286,8 +325,8 @@ def draw_points(points):
     n_points = len(points) // 2
     points = np.reshape(points, (n_points, 2))
     for x,y in zip(points[:, 0], points[:, 1]):
-        xs = int(x * 512)
-        ys = int(y * 512)
+        xs = int(x * 512) + 256
+        ys = int(y * 512) + 256
         cv2.circle(img, (xs, ys), radius=2, color=(255,255,255), thickness=-1)
     
     return img
@@ -306,17 +345,17 @@ if __name__ == "__main__":
         step_size=64,
         shuffle=True,
         augment=True,
-        oversample=True
+        oversample=False
     )
 
     print(f"Len of Data Generator {len(generator)}")
 
     for x, y in tqdm(generator):
-        pass
-        # for frame in x[0]:
-        #     # print(y[0], generator.index_to_label[int(y[0])])
-        #     img =  draw_points(frame)
-        #     cv2.imshow("image", img)
-        #     cv2.waitKey(-1)
-        # # print(x.shape)
-        # print(y.shape)
+        # pass
+        for frame in x[0]:
+            # print(y[0], generator.index_to_label[int(y[0])])
+            img =  draw_points(frame)
+            cv2.imshow("image", img)
+            cv2.waitKey(-1)
+        print(x.shape)
+        print(y.shape)
