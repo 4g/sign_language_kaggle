@@ -86,9 +86,6 @@ def apply_affine_transforms(keypoints, transforms):
     return kps
 
 def zoom(hratio, vratio):
-    # pts1 = np.float32([[512-512*ratio, 512*ratio],[512*ratio, 512*ratio],[512*ratio, 512-512*ratio], [512-512*ratio, 512-512*ratio]])
-    # pts2 = np.float32([[0, 512], [512, 512],[512, 0], [0, 0]])
-    # M = cv2.getPerspectiveTransform(pts1,pts2)
     M = np.eye(2)
     M[1][1] = vratio + 1
     M[0][0] = hratio + 1

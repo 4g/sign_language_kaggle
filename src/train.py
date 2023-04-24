@@ -5,7 +5,6 @@ import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 
 
-
 from tensorflow.keras import mixed_precision
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
@@ -84,19 +83,20 @@ def train(data_dir, output):
         input_shape=(step_size, train_gen.n_points),
         head_size=embed_dim,
         num_heads=4,
-        ff_dim=embed_dim*2,
+        ff_dim=embed_dim,
         num_transformer_blocks=1,
         mlp_units=[embed_dim],
-        mlp_dropout=0.4,
-        dropout=0.25,
+        mlp_dropout=0.2,
+        dropout=0.0,
         n_classes=250,
-        layer_norm=True
+        layer_norm=True,
+        pos_embedding=True
     )
     
-    optimizer = keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=0.004)
+    # optimizer = keras.optimizers.AdamW(learning_rate=0.00001, weight_decay=0.004)
 
-    learning_rate = CustomSchedule(embed_dim)
-    optimizer = tf.keras.optimizers.AdamW(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9, weight_decay=0.004)
+    learning_rate = CustomSchedule(embed_dim, warmup_steps=4000)
+    optimizer = tf.keras.optimizers.Adam(learning_rate, weight_decay=0.004)
     
 
     model.compile(optimizer=optimizer,
@@ -114,13 +114,13 @@ def train(data_dir, output):
     
     reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='val_accuracy',
                                                      factor=0.5,
-                                                     patience=15,
-                                                     min_lr=2e-5)
+                                                     patience=500,
+                                                     min_lr=1e-5)
     
     checkpoint_filepath = f"{output}/" + "model_{epoch}/"
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath)
 
-    # model = keras.models.load_model(f"16_04/model_55/")
+    # model = keras.models.load_model(f"distance_angles/model_108/")
     #
     # model.compile(optimizer=keras.optimizers.Adam(0.00001, weight_decay=0.0004),
     #               loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
@@ -128,13 +128,13 @@ def train(data_dir, output):
     
     # tmp.save_weights("/tmp/weights.hdf5")
 
-    # model.load_weights("/tmp/weights.hdf5")
+    # model.load_weights("distance_angles/model_108/")
 
     model.fit(train_gen,
              validation_data=val_gen,
              epochs=200,
              shuffle=True,
-             callbacks=[reduce_lr,board, checkpoint],
+             callbacks=[board, checkpoint, reduce_lr],
               use_multiprocessing=True,
               workers=4
              )

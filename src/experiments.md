@@ -89,3 +89,5 @@ Things to do with dates
 11. determine misperforming classes
 12. larger embedding layer
 13. give separate embedding to NA
+
+preclassify then only use good frames
