@@ -91,3 +91,37 @@ Things to do with dates
 13. give separate embedding to NA
 
 preclassify then only use good frames
+
+1. simplify points and network and make network and make a submission
+2. find a better way to chose frames
+
+Problems 
+1. labels are close to each other in meaning and looks
+2. average pooling means averaging the class across video
+
+
+Layers in model
+1. normalization
+2. keypoint extraction
+3. choose non nan frames
+4. angles etc maybe
+
+augmentations before sending to model
+1. flip, rotation, shift etc.
+   
+steps 
+0. flipping is incorrect in pose , only hand and head points are flipped. correct the fucking augmentation. expected accuracy 0.75
+1. rewrite network to have the required layers
+2. train with new code, see transformer parameters of other people and if needed separate embeddings
+3. make submission
+
+best config :
+1. 1536 ffdim
+2. no z
+
+things to do 
+PLAN THE FUCKING DAY FIRST
+1. capture hand pose : use tflite embedder in some way. maybe use it to train another embedder for hands only.
+2. how to handle classes that are close to each other
+3. implement normalization and frame choice in model
+4. separate embedding for NAN

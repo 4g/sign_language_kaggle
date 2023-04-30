@@ -14,7 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from scipy import interpolate
 
-from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms, normalize_by_shoulders
+from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms, normalize_by_shoulders, zflip, normalize_z
 
 class BinaryGenerator(tf.keras.utils.Sequence):
     def __init__(self,
@@ -88,7 +88,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         self.labels = []
         self.make_relevant_parts()
         # self.n_points = len(self.relevant_indices)*2
-        self.n_points = 314
+        self.n_points = 222
         
         data_dir = Path(data_dir)
         npy_dir = data_dir / "train_npy"
@@ -174,7 +174,6 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         self.ELBOWS = [502, 503]
         self.WRISTS = [489+15, 489+16]
         self.HAND_POSE_POINTS = [489+x for x in [15,16,17,18,19,20,21,22]]
-        self.FINGERS = [468 + x for x in [0,1,4,5,8,9,12,13,16,17,20]] + [522 + x for x in [0,1,4,5,8,9,12,13,16,17,20]]
 
         self.UPPER_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415]
         
@@ -197,7 +196,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         ]
         
         # self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.LHAND, self.RHAND, self.SHOULDERS, self.ELBOWS, self.HAND_POSE_POINTS]
-        self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.FINGERS, self.SHOULDERS, self.ELBOWS, self.HAND_POSE_POINTS, self.LHAND, self.RHAND]
+        self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.SHOULDERS, self.ELBOWS, self.LHAND, self.RHAND]
 
         self.relevant_indices = []
         for part in self.relevant_parts:
@@ -216,21 +215,21 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             self.cache[path] = kps.astype(np.float16)
 
         kps = self.cache[path]
-        zkps = kps[:,:,2]
-        kps = kps[:,:,0:2]
-        aug_perc = 0.35
+        # zkps = kps[:,:,2]
+        # kps = kps[:,:,0:2]
+        aug_perc = 0.25
 
-        # nonna_kps = []
-        # # print("-----")
-        # for i, frame in enumerate(kps):
-        #     # print(frame[self.LHAND][0][0], frame[self.RHAND][0][0])
-        #     lna = np.isnan(frame[self.LHAND][0][0])
-        #     rna = np.isnan(frame[self.RHAND][0][0])
-        #     if lna and rna:
-        #         continue
-        #     nonna_kps.append(i)
+        nonna_kps = []
+        # print("-----")
+        for i, frame in enumerate(kps):
+            # print(frame[self.LHAND][0][0], frame[self.RHAND][0][0])
+            lna = np.isnan(frame[self.LHAND][0][0])
+            rna = np.isnan(frame[self.RHAND][0][0])
+            if lna and rna:
+                continue
+            nonna_kps.append(i)
         
-        # kps = kps[nonna_kps]
+        kps = kps[nonna_kps]
 
         if self.augment and random.random() < aug_perc*2:
             if random.random() < 0.5:
@@ -250,7 +249,6 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             idx = np.linspace(0, len(kps), self.step_size, endpoint=False, dtype=int)
 
         kps = kps[idx]
-        zkps = zkps[idx]
         
         # reverse the video
         if self.augment and random.random() < aug_perc:
@@ -260,32 +258,39 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         gr = lambda x : (np.random.random() - .5)*2*x
 
         aug = 0.3
+        
+        # separate z because it is augmented differently
+        zkps = kps[:,:,2]
+        kps = kps[:,:,0:2]
 
         if self.augment and random.random() < aug_perc * 2:
             kps = hflip(kps)
+            zkps = zflip(zkps)
             kps = shift(kps, hratio=gr(aug), vratio=gr(aug))
 
             # affines = [rotate(get_random(0.2))]
-            if random.random() < aug_perc:
+            if random.random() < aug_perc*2:
                 affines = [rotate(gr(aug)), zoom(gr(aug), gr(aug)), shear(gr(aug), gr(aug))]
                 kps = apply_affine_transforms(kps, affines)
 
-        angles = []
-        langles = self.angles_between(kps[:,self.LHAND,:])
-        rangles = self.angles_between(kps[:,self.RHAND,:])
-        pangles = self.angles_between(kps[:,self.HAND_POSE_POINTS,:])
+        # angles = []
+        # langles = self.angles_between(kps[:,self.LHAND,:])
+        # rangles = self.angles_between(kps[:,self.RHAND,:])
+        # pangles = self.angles_between(kps[:,self.HAND_POSE_POINTS,:])
         # fangles = self.angles_between(kps[:,self.FINGERS,:])
-        handz = zkps[:, self.LHAND + self.RHAND]
-        hand_pos = self.hand_neck_distance(kps)
-        lip_openings = self.lip_opening(kps)
+        # handz = zkps[:, self.LHAND + self.RHAND]
+        # hand_pos = self.hand_neck_distance(kps)
+        # lip_openings = self.lip_opening(kps)
 
 
-        angles = np.concatenate([langles, rangles, pangles, handz, hand_pos, lip_openings], axis=-1)
+        # angles = np.concatenate([hand_pos, lip_openings], axis=-1)
 
 
         kps = normalize_by_shoulders(kps, lshoulder_index=500, rshoulder_index=501)
-        
+        zkps = normalize_z(zkps, lshoulder_index=500, rshoulder_index=501)
+
         kps = self.extract_relevant_parts(kps)
+        zkps = self.extract_relevant_parts(zkps)
         # mv = self.extract_relevant_parts(mv)
 
         kps = np.reshape(kps, (-1, kps.shape[1] * 2))
@@ -293,7 +298,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         if not self.enable_cache:
             self.cache = {}
         
-        kps = np.concatenate([kps, hand_pos, angles], axis=-1)
+        kps = np.concatenate([kps, zkps], axis=-1)
         kps = np.nan_to_num(kps, nan=0.0)
         return kps
 
@@ -375,7 +380,9 @@ if __name__ == "__main__":
         step_size=64,
         shuffle=True,
         augment=True,
-        oversample=False
+        oversample=False,
+        split_start=0.9,
+        split_end=1.0
     )
 
     print(f"Len of Data Generator {len(generator)}")

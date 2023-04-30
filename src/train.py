@@ -83,24 +83,24 @@ def train(data_dir, output):
         input_shape=(step_size, train_gen.n_points),
         head_size=embed_dim,
         num_heads=4,
-        ff_dim=embed_dim,
+        ff_dim=embed_dim*3,
         num_transformer_blocks=1,
         mlp_units=[embed_dim],
-        mlp_dropout=0.2,
-        dropout=0.0,
+        mlp_dropout=0.25,
+        dropout=0.4,
         n_classes=250,
         layer_norm=True,
-        pos_embedding=True
+        pos_embedding=False
     )
     
-    # optimizer = keras.optimizers.AdamW(learning_rate=0.00001, weight_decay=0.004)
+    optimizer = keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=0.004)
 
-    learning_rate = CustomSchedule(embed_dim, warmup_steps=4000)
-    optimizer = tf.keras.optimizers.Adam(learning_rate, weight_decay=0.004)
+    # learning_rate = CustomSchedule(embed_dim, warmup_steps=4000)
+    # optimizer = tf.keras.optimizers.Adam(learning_rate, weight_decay=0.004)
     
 
     model.compile(optimizer=optimizer,
-                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.75),
+                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.6),
                   metrics=METRICS)
 
     model.summary()
@@ -114,7 +114,7 @@ def train(data_dir, output):
     
     reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='val_accuracy',
                                                      factor=0.5,
-                                                     patience=500,
+                                                     patience=10,
                                                      min_lr=1e-5)
     
     checkpoint_filepath = f"{output}/" + "model_{epoch}/"
@@ -136,7 +136,7 @@ def train(data_dir, output):
              shuffle=True,
              callbacks=[board, checkpoint, reduce_lr],
               use_multiprocessing=True,
-              workers=4
+              workers=8
              )
 
     model.save(f"{output}")

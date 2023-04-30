@@ -143,3 +143,4 @@ if __name__ == "__main__":
         n_classes=250,
         layer_norm=True
     )
+    model.summary()
