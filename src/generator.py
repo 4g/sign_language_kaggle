@@ -29,7 +29,8 @@ class BinaryGenerator(tf.keras.utils.Sequence):
                  cache=True,
                  mode='train'
                  ):
-
+        
+        random.seed(42)    
         self.X = None
         self.num_classes = None
         self.labels = None
@@ -86,9 +87,10 @@ class BinaryGenerator(tf.keras.utils.Sequence):
     def load_data(self, data_dir):
         self.X = []
         self.labels = []
-        self.make_relevant_parts()
+        self.LHAND = list(range(468, 489))
+        self.RHAND = list(range(522, 543))
         # self.n_points = len(self.relevant_indices)*2
-        self.n_points = 222
+        self.n_points = 152
         
         data_dir = Path(data_dir)
         npy_dir = data_dir / "train_npy"
@@ -123,19 +125,17 @@ class BinaryGenerator(tf.keras.utils.Sequence):
 
     def __getitem__(self, n: int) -> Tuple[np.ndarray, np.ndarray]:
         indices = self.indices[n * self.batch_size: n * self.batch_size + self.batch_size]
-        x_batch = np.zeros((self.batch_size, self.step_size, self.n_points), dtype=np.float16)
+        x_batch = np.zeros((self.batch_size, self.step_size, 543, 3), dtype=np.float16)
         y_batch = np.zeros((self.batch_size, self.num_classes), dtype=np.float16)
-        # y_batch = np.zeros(self.batch_size, dtype=np.float16)
         
 
         for index, rindex in enumerate(indices):
             sample = self.preprocess(self.X[rindex])
             x_batch[index] = sample
             y_batch[index][self.labels[rindex]] = 1.0
-            # y_batch[index] = self.labels[rindex]
+            
+        return x_batch, y_batch
 
-        return (x_batch, y_batch)
-    
 
     def reflect_pad(self, arr:list, desired_length:int):
         """
@@ -153,61 +153,6 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         
         return arr[:desired_length]
 
-    def resize_array(self, arr, size):
-        if len(arr) == 1:
-            arr = arr * size
-            return arr
-            
-        old_size = len(arr)
-        x = np.linspace(0, 1, num=old_size)
-        f = interpolate.interp1d(x=x, y=arr)
-        new_points = np.linspace(0, 1, num=size)
-        new_arr = f(new_points)
-
-        return new_arr
-
-    def make_relevant_parts(self):
-        self.LHAND = list(range(468, 489))
-        self.RHAND = list(range(522, 543))
-        self.POSE = list(range(489, 522))
-        self.SHOULDERS = [500, 501]
-        self.ELBOWS = [502, 503]
-        self.WRISTS = [489+15, 489+16]
-        self.HAND_POSE_POINTS = [489+x for x in [15,16,17,18,19,20,21,22]]
-
-        self.UPPER_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415]
-        
-        self.LOWER_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324]
-        
-        self.LIP = self.LOWER_LIP + self.UPPER_LIP        
-        
-
-        # self.LIP = [82, 13, 
-        #             87, 14]
-        
-        self.REYE = [
-            145, 153,
-            158, 157,
-        ]
-
-        self.LEYE = [
-            374, 380,
-            385, 384
-        ]
-        
-        # self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.LHAND, self.RHAND, self.SHOULDERS, self.ELBOWS, self.HAND_POSE_POINTS]
-        self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.SHOULDERS, self.ELBOWS, self.LHAND, self.RHAND]
-
-        self.relevant_indices = []
-        for part in self.relevant_parts:
-            self.relevant_indices += part
-
-
-    def extract_relevant_parts(self, kps):
-        kps = kps[:, self.relevant_indices]
-        return kps
-
-
     def preprocess(self, path):
        
         if path not in self.cache:
@@ -215,10 +160,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             self.cache[path] = kps.astype(np.float16)
 
         kps = self.cache[path]
-        # zkps = kps[:,:,2]
-        # kps = kps[:,:,0:2]
-        aug_perc = 0.25
-
+        
         nonna_kps = []
         # print("-----")
         for i, frame in enumerate(kps):
@@ -228,15 +170,21 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             if lna and rna:
                 continue
             nonna_kps.append(i)
-        
+
         kps = kps[nonna_kps]
+        
+        aug_perc = 0.35
+        aug_strength = 0.3    
 
         if self.augment and random.random() < aug_perc*2:
             if random.random() < 0.5:
-                idx = random.sample(list(range(len(kps))), min(self.step_size, len(kps)))
-                # if len(idx) < self.step_size:
-                #     idx = self.reflect_pad(idx, self.step_size)
-                idx = np.linspace(min(idx), max(idx), self.step_size, endpoint=True, dtype=int)
+                idx = list(range(len(kps)))
+                if len(idx) < self.step_size:
+                    idx = self.reflect_pad(idx, self.step_size)
+                else:
+                    idx = random.sample(list(range(len(kps))), self.step_size)
+                    idx = sorted(idx)
+                    # idx = np.linspace(min(idx), max(idx), self.step_size, endpoint=True, dtype=int)
 
             else:
                 center = len(kps)//2
@@ -247,102 +195,38 @@ class BinaryGenerator(tf.keras.utils.Sequence):
                 idx = np.linspace(start_idx, end_idx, self.step_size, endpoint=False, dtype=int)
         else:
             idx = np.linspace(0, len(kps), self.step_size, endpoint=False, dtype=int)
+            
 
         kps = kps[idx]
         
+        
+
         # reverse the video
         if self.augment and random.random() < aug_perc:
             kps = kps[::-1]
-
-        
+            
+            
         gr = lambda x : (np.random.random() - .5)*2*x
 
-        aug = 0.3
         
         # separate z because it is augmented differently
-        zkps = kps[:,:,2]
+        zkps = kps[:,:,2:]
         kps = kps[:,:,0:2]
+
 
         if self.augment and random.random() < aug_perc * 2:
             kps = hflip(kps)
+
             zkps = zflip(zkps)
-            kps = shift(kps, hratio=gr(aug), vratio=gr(aug))
+            kps = shift(kps, hratio=gr(aug_strength), vratio=gr(aug_strength))
 
             # affines = [rotate(get_random(0.2))]
             if random.random() < aug_perc*2:
-                affines = [rotate(gr(aug)), zoom(gr(aug), gr(aug)), shear(gr(aug), gr(aug))]
+                affines = [rotate(gr(aug_strength)), zoom(gr(aug_strength), gr(aug_strength)), shear(gr(aug_strength), gr(aug_strength))]
                 kps = apply_affine_transforms(kps, affines)
 
-        # angles = []
-        # langles = self.angles_between(kps[:,self.LHAND,:])
-        # rangles = self.angles_between(kps[:,self.RHAND,:])
-        # pangles = self.angles_between(kps[:,self.HAND_POSE_POINTS,:])
-        # fangles = self.angles_between(kps[:,self.FINGERS,:])
-        # handz = zkps[:, self.LHAND + self.RHAND]
-        # hand_pos = self.hand_neck_distance(kps)
-        # lip_openings = self.lip_opening(kps)
-
-
-        # angles = np.concatenate([hand_pos, lip_openings], axis=-1)
-
-
-        kps = normalize_by_shoulders(kps, lshoulder_index=500, rshoulder_index=501)
-        zkps = normalize_z(zkps, lshoulder_index=500, rshoulder_index=501)
-
-        kps = self.extract_relevant_parts(kps)
-        zkps = self.extract_relevant_parts(zkps)
-        # mv = self.extract_relevant_parts(mv)
-
-        kps = np.reshape(kps, (-1, kps.shape[1] * 2))
-        
-        if not self.enable_cache:
-            self.cache = {}
-        
-        kps = np.concatenate([kps, zkps], axis=-1)
-        kps = np.nan_to_num(kps, nan=0.0)
-        return kps
-
-    def lip_opening(self, kps):
-        r  = []
-        for frame_index in range(len(kps)):
-            d = []
-            for p1, p2 in zip(self.UPPER_LIP, self.LOWER_LIP):
-                l = np.linalg.norm(kps[frame_index, p1, :] - kps[frame_index, p2, :])
-                d.append(l)
-            r.append(d)
-        return np.asarray(r, np.float16)
-
-
-    def hand_neck_distance(self, kps):
-        lshoulder_index = self.SHOULDERS[0]
-        rshoulder_index = self.SHOULDERS[1]
-        dists = []
-        for frame_index in range(len(kps)):
-            lshoulder = kps[frame_index, lshoulder_index, :]
-            rshoulder = kps[frame_index, rshoulder_index, :]
-            shoulder_center = (lshoulder + rshoulder) / 2
-            lwrist = kps[frame_index, self.WRISTS[0]]
-            rwrist = kps[frame_index, self.WRISTS[1]]
-            d1 = np.linalg.norm(lwrist - shoulder_center)
-            d2 = np.linalg.norm(rwrist - shoulder_center)
-            dists.append([d1, d2])
-        
-        dists = np.asarray(dists, dtype=np.float16)
-        return dists
-
-    def angles_between(self, kps):
-        angles = np.arctan2(np.diff(kps[:, :, 1], axis=1), np.diff(kps[:, :, 0], axis=1))
-        angles = np.concatenate([angles, np.zeros((angles.shape[0], 1))], axis=1)
-        return angles
-
-    def motion_vector(self, kps):
-        mv = np.diff(kps, axis=0)
-        mv_norm = np.linalg.norm(mv,  axis=2)
-        mv_norm = np.concatenate([mv_norm, mv_norm[-1:]], axis=0)
-        
-        # mv_norm = np.expand_dims(mv_norm, axis=-1)
-        return mv_norm
-
+        kpsz = np.concatenate([kps, zkps], axis=-1)
+        return kpsz
 
     def on_epoch_end(self):
         """

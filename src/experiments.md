@@ -122,6 +122,26 @@ best config :
 things to do 
 PLAN THE FUCKING DAY FIRST
 1. capture hand pose : use tflite embedder in some way. maybe use it to train another embedder for hands only.
-2. how to handle classes that are close to each other
+   1. Open up the keras model google has given. Checkout what is needed for embeddings
+2. how to handle classes that are close to each other (focal loss ?)
 3. implement normalization and frame choice in model
 4. separate embedding for NAN
+
+
+1. count nans to get handedness
+2. extract dominant hand and normalize hand between 0,1
+3. why do all this. just submit both hands and add their embeddings
+
+Timelines
+12:00 pm, finish testing gesture model
+2:00, pm model does everything
+4:00, focal loss and nan embeddings complete
+6:00 tflite sample submission done
+
+tflite model
+1. takes all keypoints in kaggle format (nframes, nkeypoints, 3)
+2. Sample frames first
+3. extract hands first , get handedness
+4. replace nan 
+5. normalize body around shoulders
+6. flatten keypoints and send to network

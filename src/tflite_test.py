@@ -2,11 +2,37 @@ import tensorflow as tf
 import generator
 import numpy as np
 from tqdm import tqdm
+import tflite_runtime.interpreter as tflite
+
+class TestModel(tf.Module):
+  def __init__(self, model):
+    super(TestModel, self).__init__()
+    self.model = model
+
+  @tf.function(input_signature=[tf.TensorSpec(shape=[None, 543, 3], dtype=tf.float32)])
+  def add(self, inputs):
+    '''
+    Simple method that accepts single input 'x' and returns 'x' + 4.
+    '''
+    # Name the output 'result' for convenience.
+    inputs = tf.expand_dims(inputs, axis=0)
+    inputs = tf.cast(inputs, tf.float16)
+    outputs = self.model(inputs)
+    output = outputs['outputs'][0,:]
+    return {'outputs':output}
 
 def evaluate(data_dir, model):
-    # Convert the model.
+#   Convert the model.
     model = tf.keras.models.load_model(model)
+    model = TestModel(model)
+    # # model(np.zeros((128, 543, 3)))
+
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.target_spec.supported_ops = [
+        tf.lite.OpsSet.TFLITE_BUILTINS, # enable TensorFlow Lite ops.
+        tf.lite.OpsSet.SELECT_TF_OPS # enable TensorFlow ops.
+    ]
+
     tflite_model = converter.convert()
 
     # Save the model.
@@ -14,6 +40,7 @@ def evaluate(data_dir, model):
     with open(tflite_path, 'wb') as f:
         f.write(tflite_model)
 
+    tflite_path = 'model.tflite'
     interpreter = tf.lite.Interpreter(tflite_path)
 
     found_signatures = list(interpreter.get_signature_list().keys())
@@ -25,19 +52,25 @@ def evaluate(data_dir, model):
     
     gen = generator.BinaryGenerator(data_dir,
                                 batch_size=1,
-                                step_size=64,
+                                step_size=32,
                                 shuffle=False,
                                 augment=False,
                                 oversample=False,
-                                split_start=0.8,
-                                split_end=1.0,
+                                split_start=0.0,
+                                split_end=0.1,
                                 cache=False)
     correct, total = 0, 0
     for xb, yb in tqdm(gen):
         frames = xb[0]
         y = yb[0]
-        output = prediction_fn(input_1=frames)
-        sign = np.argmax(output["dense_2"])
+        frames = np.float32(frames)
+        output = prediction_fn(inputs=frames)
+        # output = model(frames)
+        output = output["outputs"]
+        
+        sign = np.argmax(output)
+        y = np.argmax(y)
+
         if int(sign) == int(y):
             correct += 1
         total += 1

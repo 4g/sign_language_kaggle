@@ -20,7 +20,7 @@ def get_keypoint_flip_mapping():
     swap_ranges = [(left_hand_points, right_hand_points), (pose_left, pose_right)]
 
 
-    right_eye = ['rightEyeUpper0', 'rightEyeLower0', 'rightEyeUpper1', 'rightEyeLower1', 'rightEyeUpper2', 'rightEyeLower2', 'rightEyeLower3', 'rightEyebrowUpper', 'rightEyebrowLower', 'rightEyeIris','noseRightCorner', 'rightCheek']
+    right_eye = ['rightEyeUpper0', 'rightEyeLower0', 'rightEyeUpper1', 'rightEyeLower1', 'rightEyeUpper2', 'rightEyeLower2', 'rightEyeLower3', 'rightEyebrowUpper', 'rightEyebrowLower','noseRightCorner', 'rightCheek']
     left_eye = [x.replace('right', 'left') for x in right_eye]
 
 
@@ -30,7 +30,7 @@ def get_keypoint_flip_mapping():
 
 
     # these parts dont have different left right parts, but have sides 
-    one_part = ['lipsUpperOuter', 'lipsLowerOuter','lipsUpperInner', 'lipsLowerInner'] 
+    one_part = ['lipsUpperOuter', 'lipsLowerOuter','lipsUpperInner', 'lipsLowerInner']
     for part in one_part:
         indices = keypoint_mapping[part]
         n_indices = len(indices)
@@ -60,27 +60,47 @@ def get_part_ranges():
     
     return x
 
-def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index):
+# def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index):
+#     keypoints = keypoints.copy()
+    
+#     desired_shoulder_length = 2.0
+
+#     for frame_index in range(len(keypoints)):
+#         lshoulder = keypoints[frame_index, lshoulder_index, :]
+#         rshoulder = keypoints[frame_index, rshoulder_index, :]
+#         shoulder_length = np.linalg.norm(lshoulder - rshoulder)
+        
+#         resize_ratio = desired_shoulder_length/shoulder_length
+        
+#         keypoints[frame_index] *= resize_ratio
+
+#         lshoulder = keypoints[frame_index, lshoulder_index, :]
+#         rshoulder = keypoints[frame_index, rshoulder_index, :]
+#         shoulder_center = (lshoulder + rshoulder) / 2
+#         keypoints[frame_index] = keypoints[frame_index] - shoulder_center
+
+#     # keypoints += 0.5
+#     return keypoints
+
+def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index,desired_shoulder_length=2.0):
     keypoints = keypoints.copy()
     
-    desired_shoulder_length = 2.0
+    # Get the shoulder coordinates for each frame
+    desired_shoulder_length = desired_shoulder_length
+    left_shoulder_coordinates = keypoints[:, lshoulder_index, :]
+    right_shoulder_coordinates = keypoints[:, rshoulder_index, :]
+    shoulder_length = np.linalg.norm(left_shoulder_coordinates - right_shoulder_coordinates, axis=1)
+    ratio = (desired_shoulder_length / shoulder_length)
+    ratio = ratio[:, np.newaxis, np.newaxis]
+    keypoints = keypoints * ratio
 
-    for frame_index in range(len(keypoints)):
-        lshoulder = keypoints[frame_index, lshoulder_index, :]
-        rshoulder = keypoints[frame_index, rshoulder_index, :]
-        shoulder_length = np.linalg.norm(lshoulder - rshoulder)
-        
-        resize_ratio = desired_shoulder_length/shoulder_length
-        
-        keypoints[frame_index] *= resize_ratio
+    # Calculate the mean of both shoulders for each frame
+    mean_shoulder_coordinates = (left_shoulder_coordinates + right_shoulder_coordinates) / 2
 
-        lshoulder = keypoints[frame_index, lshoulder_index, :]
-        rshoulder = keypoints[frame_index, rshoulder_index, :]
-        shoulder_center = (lshoulder + rshoulder) / 2
-        keypoints[frame_index] = keypoints[frame_index] - shoulder_center
+    # Subtract the mean shoulder coordinates from all keypoints to center each frame
+    centered_keypoints = keypoints - mean_shoulder_coordinates[:, np.newaxis, :]
+    return centered_keypoints
 
-    # keypoints += 0.5
-    return keypoints
 
 
 def normalize_z(zkeypoints, lshoulder_index, rshoulder_index):
@@ -118,9 +138,7 @@ def hflip(keypoints):
 
     keypoints = keypoints.copy()
     keypoints[:,:,0] = 1 - keypoints[:,:,0]
-    
-    # these parts have left right swapped
-    
+
     tmp = keypoints[:,left_points]
     keypoints[:,left_points] = keypoints[:,right_points]
     keypoints[:,right_points] = tmp 
@@ -214,21 +232,33 @@ if __name__ == "__main__":
         allkps = allkps[:, :, 0:2]
 
         gr = lambda x : (np.random.random() - .5)*2*x
+        LHAND = list(range(468, 489))
+        RHAND = list(range(522, 543))
+
+        print(np.sum(np.isnan(allkps[0, LHAND])), np.sum(np.isnan(allkps[0, RHAND])))
+
 
         rot_kps = hflip(allkps)
-        rot_kps = shift(rot_kps, hratio=gr(0.2), vratio=gr(0.2))
-        affines = [rotate(gr(.1)), zoom(gr(.1), gr(.1)), shear(gr(.1), gr(.1))]
-        # affines = [zoom(0.2, 0.2)]
-        # rot_kps = allkps
-        rot_kps = apply_affine_transforms(rot_kps, affines)
+        print(np.sum(np.isnan(rot_kps[0, LHAND])), np.sum(np.isnan(rot_kps[0, RHAND])))
+        
+        print(allkps[0, LHAND], allkps[0, RHAND])
+        print("--")
+        print(rot_kps[0, LHAND], rot_kps[0, RHAND])
+        
+        
+        print('--===================--')
+        
+        # rot_kps = shift(rot_kps, hratio=gr(0.2), vratio=gr(0.2))
+        # affines = [rotate(gr(.1)), zoom(gr(.1), gr(.1)), shear(gr(.1), gr(.1))]
+        # rot_kps = apply_affine_transforms(rot_kps, affines)
 
-        rot_kps = normalize_by_shoulders(keypoints=rot_kps, lshoulder_index=500, rshoulder_index=501)
+        # rot_kps = normalize_by_shoulders(keypoints=rot_kps, lshoulder_index=500, rshoulder_index=501,desired_shoulder_length=0.5)
         
 
-        for index, kps in enumerate(allkps):
-            img = draw_points(kps)
-            rot_img = draw_points(rot_kps[index], normalized=True)
+        # for index, kps in enumerate(allkps):
+        #     img = draw_points(kps)
+        #     rot_img = draw_points(rot_kps[index], normalized=False)
 
-            cv2.imshow("img", img)
-            cv2.imshow("rot_img", rot_img)
-            cv2.waitKey(-1)
+        #     cv2.imshow("img", img)
+        #     cv2.imshow("rot_img", rot_img)
+        #     cv2.waitKey(-1)
