@@ -6,18 +6,19 @@ absl.logging.set_verbosity(absl.logging.ERROR)
 
 from tensorflow.keras import layers
 from tensorflow import keras
+keras.utils.set_random_seed(42)
 
 
 import tensorflow as tf
-import numpy as np 
+import numpy as np
 
-SHOULDERS = [500, 501]
-LHAND = list(range(468, 489))
-RHAND = list(range(522, 543))
+import mediapipe as mp
+from keypoint_lib import get_keypoint_flip_mapping
+mp_face_mesh = mp.solutions.face_mesh
 
 class Parts:
     def __init__(self) -> None:
-        pass
+        self.make_relevant_parts()
 
     def make_relevant_parts(self):
         self.LHAND = list(range(468, 489))
@@ -26,126 +27,151 @@ class Parts:
         self.SHOULDERS = [500, 501]
         self.ELBOWS = [502, 503]
         self.WRISTS = [489+15, 489+16]
-        self.HAND_POSE_POINTS = [489+x for x in [15,16,17,18,19,20,21,22]]
 
-        self.UPPER_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415]
-        
-        self.LOWER_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324]
-        
-        self.LIP = self.LOWER_LIP + self.UPPER_LIP        
-        
-        self.REYE = [
-            145, 153,
-            158, 157,
-        ]
 
-        self.LEYE = [
-            374, 380,
-            385, 384
-        ]
-        
-        # self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.LHAND, self.RHAND, self.SHOULDERS, self.ELBOWS, self.HAND_POSE_POINTS]
-        self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.SHOULDERS, self.ELBOWS, self.LHAND, self.RHAND]
-        # self.relevant_parts = [self.LEYE, self.REYE, self.LIP, self.SHOULDERS, self.ELBOWS, self.WRISTS]
+        get_face_mesh_part = lambda part : list(set(list(np.reshape(np.asarray(list(part)), -1))))
+        self.LIP =  get_face_mesh_part(mp_face_mesh.FACEMESH_LIPS)
+        self.LEYE = get_face_mesh_part(mp_face_mesh.FACEMESH_RIGHT_EYE)
+        self.REYE = get_face_mesh_part(mp_face_mesh.FACEMESH_LEFT_EYE)
 
-        self.relevant_indices = []
-        for part in self.relevant_parts:
-            self.relevant_indices += part
-        
-        return self
+        self.LIP_LEFT = self.LIP.index(78)
+        self.LIP_RIGHT = self.LIP.index(308)
+
+        self.left, self.right = get_keypoint_flip_mapping()
+
 
 @tf.function
-def preprocess(x):
+def rotate_3d(coordinates):
+    # Rotation angles in degrees
+    a1, a2, a3 = 30, 45, 60
+
+    a1_rad, a2_rad, a3_rad = np.radians(a1), np.radians(a2), np.radians(a3)
+
+
+    # Rotation matrices for each axis
+    rot_x = np.array([
+        [1, 0, 0],
+        [0, np.cos(a1_rad), -np.sin(a1_rad)],
+        [0, np.sin(a1_rad), np.cos(a1_rad)],
+    ], dtype=np.float32)
+
+    rot_y = np.array([
+        [np.cos(a2_rad), 0, np.sin(a2_rad)],
+        [0, 1, 0],
+        [-np.sin(a2_rad), 0, np.cos(a2_rad)],
+    ], dtype=np.float32)
+
+    rot_z = np.array([
+        [np.cos(a3_rad), -np.sin(a3_rad), 0],
+        [np.sin(a3_rad), np.cos(a3_rad), 0],
+        [0, 0, 1],
+    ], dtype=np.float32)
+        # Combined rotation matrix
+    
+    rot_matrix = tf.matmul(rot_z, tf.matmul(rot_y, rot_x))
+
+    # Apply rotation to the coordinates
+    rotated_coordinates = tf.matmul(coordinates, rot_matrix)
+    return rotated_coordinates
+
+@tf.function
+def preprocess(x, augment=False):
     # extract 64 frames to work with
     # remove frames where both hands are NAN
-    x = tf.cast(x, tf.float16)
+    parts = Parts()
 
-    lna = tf.math.is_nan(x[:,LHAND[0],0])
-    rna = tf.math.is_nan(x[:,RHAND[0],0])
+    @tf.function
+    def hflip(kps):
+        new_kps = kps * tf.constant([-1, 1, 1], dtype=tf.float32) + tf.constant([1, 0, 0], dtype=tf.float32)
+        index_map = np.asarray(list(range(543)), dtype=np.int32)
+        tmp = index_map[parts.left]
+        index_map[parts.left] = index_map[parts.right]
+        index_map[parts.right] = tmp
+        
+        new_kps = tf.gather(new_kps, index_map, axis=1)
+
+        return new_kps
+    
+    @tf.function
+    def center_around(kps, indices):
+        mean_coordinate = tf.math.reduce_mean(tf.gather(kps, indices=indices, axis=1), axis=1, keepdims=True)
+        centered_keypoints = kps - mean_coordinate
+        return centered_keypoints
+
+    @tf.function
+    def resize_by_bone(kps, joint1, joint2, desired_length=2.0):
+        joint1 = kps[:, joint1, 0:2]
+        joint2 = kps[:, joint2, 0:2]
+        bone_length = tf.norm(joint1 - joint2, axis=1)
+        ratio = (desired_length / bone_length)
+        ratio = ratio[:, tf.newaxis, tf.newaxis]
+        kps = kps * ratio
+        return kps
+
+
+    lna = tf.math.is_nan(x[:,parts.LHAND[0],0])
+    rna = tf.math.is_nan(x[:,parts.RHAND[0],0])
 
     nlna = tf.math.reduce_sum(tf.cast(lna, tf.int32))
     nrna = tf.math.reduce_sum(tf.cast(rna, tf.int32))
     
-    dominant_hand = RHAND
+    # assume right hand dominant
     dominant_hand_index = rna
-    handedness = 1.0
 
+    # override if left hand has less NA
     if nlna < nrna:
-        dominant_hand = LHAND
+        x = hflip(x)
         dominant_hand_index = lna
-        handedness = 0.0
 
+    # extract frames where dominant hand is present
     hand_present = tf.where(~dominant_hand_index)
     hand_present = tf.reshape(hand_present, shape=(-1,))
     x = tf.gather(x, hand_present, axis=0)
 
+    # extract 64 equal spaced frames
     n_frames = tf.shape(x)[0]
     indices = tf.linspace(0, n_frames - 1, 64, name="linspace", axis=0)
     indices = tf.cast(indices, tf.int32)
 
     keypoints = tf.gather(x, indices)
 
-    def get_normalized_hand(kps, hand_index):
-        h = tf.gather(kps, hand_index, axis=1)
-        z = h[:, :, 2:]
-        h = h[:,:,0:2]
-        
-        mi = tf.math.reduce_min(h, axis=1)
-        ma = tf.math.reduce_max(h, axis=1)
-        h = (h - mi[:, tf.newaxis, :])/((ma[:, tf.newaxis, :] - mi[:, tf.newaxis, :]) + 0.00001)
-        h = tf.concat([h, z], axis=-1)
-        return h
-    
-    lh = get_normalized_hand(keypoints, dominant_hand)
-    hands = lh
-    
+    lip = tf.gather(keypoints, parts.LIP, axis=1)
+    lip = center_around(lip, [parts.LIP_LEFT, parts.LIP_RIGHT])
+    lip = resize_by_bone(lip, joint1=parts.LIP_LEFT, joint2=parts.LIP_RIGHT)
+    lip = tf.gather(lip, [0,1], axis=2)
 
-    # hands = tf.concat([lh, rh], axis=-2)
+    hand = tf.gather(keypoints, parts.RHAND, axis=1)
+    hand = center_around(hand, [0])
+    hand = resize_by_bone(hand, joint1=0, joint2=12)
 
-    # Check for NaN values in the tensor
-    is_nan = tf.math.is_nan(keypoints)
+    if augment:
+        hand = rotate_3d(hand)
 
-    # Replace NaN values with zeros
-    keypoints = tf.where(is_nan, tf.zeros_like(keypoints), keypoints)
+    pose_parts = parts.SHOULDERS + parts.ELBOWS + [parts.LIP_LEFT, parts.LIP_RIGHT] + parts.WRISTS
+    pose = tf.gather(keypoints, pose_parts, axis=1)
+    pose = center_around(kps=pose, indices=[0,1])
+    pose = resize_by_bone(kps=pose, joint1=0, joint2=1)
+    pose = tf.gather(pose, [0,1], axis=2)
 
 
-    # normalize by shoulders    
-    desired_shoulder_length = 2.0
-    left_shoulder_coordinates = keypoints[:, SHOULDERS[0], :]
-    right_shoulder_coordinates = keypoints[:, SHOULDERS[1], :]
-    shoulder_length = tf.norm(left_shoulder_coordinates - right_shoulder_coordinates, axis=1)
-    ratio = (desired_shoulder_length / shoulder_length)
-    ratio = ratio[:, tf.newaxis, tf.newaxis]
-    keypoints = keypoints * ratio
+    hand = tf.reshape(hand, (64, -1))
+    pose = tf.reshape(pose, (64, -1))
+    lip = tf.reshape(lip, (64, -1))
 
-    # Calculate the mean of both shoulders for each frame
-    mean_shoulder_coordinates = (left_shoulder_coordinates + right_shoulder_coordinates) / 2
+    def bye_nan(t):
+        is_nan = tf.math.is_nan(t)
+        t = tf.where(is_nan, tf.zeros_like(t), t)
+        return t
 
-    # Subtract the mean shoulder coordinates from all keypoints to center each frame
-    centered_keypoints = keypoints - mean_shoulder_coordinates[:, tf.newaxis, :]
+    hand = bye_nan(hand)
+    pose = bye_nan(pose)
+    lip = bye_nan(lip)
 
-    parts = Parts().make_relevant_parts()
-    
-    part_indices = parts.relevant_indices
-    x = tf.gather(centered_keypoints, part_indices, axis=1)
-    x = tf.gather(x, [0,1], axis=2)
-    x = tf.reshape(x, (64, 148))
-
-    x = tf.cast(x, tf.float16)
-    hands = tf.cast(hands, tf.float16)
-    handedness = tf.cast(handedness, tf.float16)
-    handedness = tf.repeat(handedness, repeats=64)
-
-    return x, hands, handedness
-
+    return hand, lip, pose
 
 def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0, layer_norm=True):
     # Normalization and Attention
-    if layer_norm:
-
-        x = layers.LayerNormalization(epsilon=1e-6)(inputs)
-    else:
-        x = inputs
+    x = layers.LayerNormalization(epsilon=1e-6)(inputs)
     
     x = layers.MultiHeadAttention(
         key_dim=head_size, num_heads=num_heads, dropout=dropout
@@ -153,11 +179,7 @@ def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0, layer_n
     x = layers.Dropout(dropout)(x)
     res = x + inputs
 
-    # Feed Forward Part
-    if layer_norm:
-        x = layers.LayerNormalization(epsilon=1e-6)(res)
-    else:
-        x = res
+    x = layers.LayerNormalization(epsilon=1e-6)(res)
     
     x = layers.Conv1D(filters=ff_dim, kernel_size=1, activation="relu")(x)
     x = layers.Dropout(dropout)(x)
@@ -173,37 +195,10 @@ def keypoint_embedding(input, units):
     x = keras.layers.Dense(units, use_bias=False, kernel_initializer=INIT_HE_UNIFORM)(x)
     return x
 
-def positional_encoding(length, depth):
-  depth = depth/2
-
-  positions = np.arange(length)[:, np.newaxis]     # (seq, 1)
-  depths = np.arange(depth)[np.newaxis, :]/depth   # (1, depth)
-
-  angle_rates = 1 / (10000**depths)         # (1, depth)
-  angle_rads = positions * angle_rates      # (pos, depth)
-
-  pos_encoding = np.concatenate(
-      [np.sin(angle_rads), np.cos(angle_rads)],
-      axis=-1) 
-
-  return tf.cast(pos_encoding, dtype=tf.float16)
-
-
-class PositionalEmbedding(tf.keras.layers.Layer):
-  def __init__(self, length, d_model):
-    super().__init__()
-    self.d_model = d_model
-    self.pos_encoding = positional_encoding(length=length, depth=d_model)
-    
-  def call(self, x):
-    length = tf.shape(x)[1]
-    # x *= tf.math.sqrt(tf.cast(self.d_model, tf.float16))
-    x = x + self.pos_encoding[tf.newaxis, :length, :]
-    return x
-
 def build_model(
     embed_dim,
-    input_shape,
+    shapes,
+    num_steps,
     head_size,
     num_heads,
     ff_dim,
@@ -216,27 +211,21 @@ def build_model(
     pos_embedding=False
 ):
 
-    inputs = tf.keras.Input(shape=input_shape, name='keypoints', dtype=tf.float16)
-
-    hand_embedding = tf.keras.Input(shape=(64, 128), name='hand_embedding', dtype=tf.float16)
+    hand = tf.keras.Input(shape=shapes[0], name='hand', dtype=tf.float32)
+    lip = tf.keras.Input(shape=shapes[1], name='lip', dtype=tf.float32)
+    pose = tf.keras.Input(shape=shapes[2], name='pose', dtype=tf.float32)
     
-    embed = keypoint_embedding(inputs, embed_dim)
-    embed2 = keypoint_embedding(hand_embedding, 64)
+    hand_embed = keypoint_embedding(hand, embed_dim)
+    lip_embed = keypoint_embedding(lip, embed_dim)
+    pose_embed = keypoint_embedding(pose, embed_dim)
+    embed = tf.concat([hand_embed, lip_embed, pose_embed], axis=-1)
 
-    embed = tf.concat([embed, embed2], axis=-1)
+    embed_dim = embed_dim * len(shapes)
 
-    embed_dim = embed_dim + 64
-
-    if pos_embedding:
-        pos_emb_layer = PositionalEmbedding(length=input_shape[0], d_model=embed_dim)
-        x = pos_emb_layer(embed)
-
-    else:
-        print("NOT POSEMB")
-        pos_emb_layer = layers.Embedding(input_dim=input_shape[0], output_dim=embed_dim,  embeddings_initializer = tf.keras.initializers.constant(0.0))
-        positions = tf.range(start=0, limit=input_shape[0], delta=1)
-        x = embed + pos_emb_layer(positions)
-        
+    pos_emb_layer = layers.Embedding(input_dim=num_steps, output_dim=embed_dim,  embeddings_initializer = tf.keras.initializers.constant(0.0))
+    positions = tf.range(start=0, limit=num_steps, delta=1)
+    x = embed + pos_emb_layer(positions)
+    
     for _ in range(num_transformer_blocks):
         x = transformer_encoder(x, head_size, num_heads, ff_dim, dropout, layer_norm)
 
@@ -249,22 +238,7 @@ def build_model(
     
     outputs = layers.Dense(n_classes, activation="softmax", kernel_initializer=keras.initializers.glorot_uniform)(x)
     
-    return tf.keras.Model([inputs, hand_embedding], outputs, name="transformer")
-
-
-@tf.function
-def hand_embedder_map(hands, handedness, gesture_embedder):
-    shape = tf.shape(hands)
-    size = shape[0] * shape[1]
-    
-    hands = tf.reshape(hands, [size, 21, 3])
-    handedness = tf.reshape(handedness, (size, 1))
-    out = gesture_embedder([hands, handedness, hands], training=False)
-    out = out * 2.0
-    out = tf.cast(out, dtype=tf.float16)
-    out = tf.reshape(out, (shape[0], shape[1], 128))
-    
-    return out
+    return tf.keras.Model([hand, lip, pose], outputs, name="transformer")
 
 
 class TFLiteModel(tf.keras.models.Model):
@@ -273,13 +247,19 @@ class TFLiteModel(tf.keras.models.Model):
 
         # Load the feature generation and main models
         self.preprocess_layer = preprocess
-        embed_dim = 512
+        embed_dim = 256
+        
+        outputs = self.preprocess_layer(np.random.random((64, 543, 3)).astype(np.float32))
+        shapes = [x.shape for x in outputs]
+        print("preprocessed_shape", shapes)
+
         self.model = build_model(
                         embed_dim=embed_dim,
-                        input_shape=(64, 148),
+                        num_steps=64,
+                        shapes=shapes,
                         head_size=embed_dim,
                         num_heads=4,
-                        ff_dim=embed_dim*3,
+                        ff_dim=1536,
                         num_transformer_blocks=1,
                         mlp_units=[embed_dim],
                         mlp_dropout=0.3,
@@ -289,31 +269,38 @@ class TFLiteModel(tf.keras.models.Model):
                         pos_embedding=False
                     )
 
-        self.hand_embedder = tf.keras.models.load_model('gesture_models/gesture_embedder/')
-        self.hand_embedder.trainable = False
-
     def build(self, input_shape):
         return super().build((None, None, 543, 3))
 
     def call(self, inputs, training=True):
         # Preprocess Data
-        x, hands, handedness = tf.map_fn(self.preprocess_layer, inputs, fn_output_signature=(tf.float16, tf.float16, tf.float16))
-        hand_embedding = hand_embedder_map(hands, handedness, self.hand_embedder)
-
-        # hand_embedding = tf.map_fn(self.hand_embedder, hands, fn_output_signature=tf.float16, parallel_iterations=20, swap_memory=True, infer_shape=False)
-        outputs = self.model({ 'keypoints': x, 'hand_embedding':hand_embedding }, training)
+        hand, lip, pose = tf.map_fn(self.preprocess_layer, inputs, fn_output_signature=(tf.float32, tf.float32, tf.float32), parallel_iterations=20)
+        outputs = self.model({'hand': hand,
+                             'lip':lip,
+                             'pose': pose}, training)
         return {'outputs': outputs}
 
 # tf.config.run_functions_eagerly(True) 
 # import numpy as np
-# x = np.random.random((100, 543, 3))
-# x[11] = np.nan
-# x[13, LHAND] = np.nan
-# x[14, RHAND] = np.nan
-# x[15, RHAND] = np.nan
+# parts = Parts()
 
-# kp, lh, handedness = preprocess(x)
-# print(kp.shape, lh.shape, handedness)
+# x = np.random.random((22, 543, 3)).astype(np.float32)
+# x[11] = np.nan
+# x[13, parts.LHAND] = np.nan
+# x[14, parts.RHAND] = np.nan
+# x[15, parts.RHAND] = np.nan
+
+# kp = preprocess(x)
+# print(kp)
+
+# x = np.random.random((100, 543, 3)).astype(np.float32)
+# x[11] = np.nan
+# x[13, parts.LHAND] = np.nan
+# x[14, parts.LHAND] = np.nan
+# x[15, parts.RHAND] = np.nan
+
+# kp = preprocess(x)
+# print(kp)
 
 
 

@@ -4,12 +4,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 
-
-from tensorflow.keras import mixed_precision
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
-
-
 import numpy as np
 import random
 from tqdm import tqdm
@@ -19,6 +13,7 @@ import generator
 from tensorflow import keras
 import tensorflow as tf
 import datetime
+
 
 def train(data_dir, output):
     step_size = 64
@@ -30,7 +25,7 @@ def train(data_dir, output):
                                             shuffle=True,
                                             augment=True,
                                             oversample=True,
-                                            split_start=0.0,
+                                            split_start=0.1,
                                             split_end=1.0)
     
     val_gen = generator.BinaryGenerator(data_dir,
@@ -51,7 +46,10 @@ def train(data_dir, output):
     # norm_layer.adapt(train_gen)
     model = finalmodel.TFLiteModel()
     
-    optimizer = keras.optimizers.AdamW(learning_rate=0.0001, weight_decay=.004)
+    # learning_rate = CustomSchedule(512)
+    learning_rate = 0.0003
+    optimizer = keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=.004)
+
     model.build(input_shape=(None, None, 543, 3))
 
     model.compile(optimizer=optimizer,
@@ -69,17 +67,17 @@ def train(data_dir, output):
     
     reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='val_accuracy',
                                                      factor=0.5,
-                                                     patience=10,
+                                                     patience=5,
                                                      min_lr=1e-5)
     
     checkpoint_filepath = f"{output}/" + "model_{epoch}/"
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath)
 
-    model = keras.models.load_model(f"test_model/model_52/")
+    # model = keras.models.load_model(f"test_model/model_52/")
     
-    model.compile(optimizer=keras.optimizers.Adam(0.00001, weight_decay=0.0004),
-                  loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
-                  metrics=METRICS)
+    # model.compile(optimizer=keras.optimizers.Adam(0.00001, weight_decay=0.0004),
+    #               loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.4),
+    #               metrics=METRICS)
     
     # tmp.save_weights("/tmp/weights.hdf5")
 
@@ -90,9 +88,27 @@ def train(data_dir, output):
              epochs=200,
              shuffle=True,
              callbacks=[board, checkpoint, reduce_lr],
-              use_multiprocessing=True,
-              workers=8
+             use_multiprocessing=True,
+             workers=8
              )
+
+    # train_gen = generator.BinaryGenerator(data_dir,
+    #                                     batch_size=batch_size,
+    #                                     step_size=step_size,
+    #                                     shuffle=True,
+    #                                     augment=True,
+    #                                     oversample=True,
+    #                                     split_start=0.0,
+    #                                     split_end=1.0)
+    # model.fit(train_gen,
+    #          validation_data=val_gen,
+    #          epochs=50,
+    #          shuffle=True,
+    #          callbacks=[board, checkpoint, reduce_lr],
+    #          use_multiprocessing=False,
+    #          workers=4
+    # )
+
 
     model.save(f"{output}")
     # model = keras.models.load_model(f"{output}")

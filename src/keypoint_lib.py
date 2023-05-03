@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import albumentations as A
 import json
+import random
 
 # from https://github.com/tensorflow/tfjs-models/blob/838611c02f51159afdd77469ce67f0e26b7bbb23/face-landmarks-detection/src/mediapipe-facemesh/keypoints.ts
 keypoint_mapping = json.load(open('src/keypoint_mapping.json'))
@@ -59,48 +60,6 @@ def get_part_ranges():
     }
     
     return x
-
-# def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index):
-#     keypoints = keypoints.copy()
-    
-#     desired_shoulder_length = 2.0
-
-#     for frame_index in range(len(keypoints)):
-#         lshoulder = keypoints[frame_index, lshoulder_index, :]
-#         rshoulder = keypoints[frame_index, rshoulder_index, :]
-#         shoulder_length = np.linalg.norm(lshoulder - rshoulder)
-        
-#         resize_ratio = desired_shoulder_length/shoulder_length
-        
-#         keypoints[frame_index] *= resize_ratio
-
-#         lshoulder = keypoints[frame_index, lshoulder_index, :]
-#         rshoulder = keypoints[frame_index, rshoulder_index, :]
-#         shoulder_center = (lshoulder + rshoulder) / 2
-#         keypoints[frame_index] = keypoints[frame_index] - shoulder_center
-
-#     # keypoints += 0.5
-#     return keypoints
-
-def normalize_by_shoulders(keypoints, lshoulder_index, rshoulder_index,desired_shoulder_length=2.0):
-    keypoints = keypoints.copy()
-    
-    # Get the shoulder coordinates for each frame
-    desired_shoulder_length = desired_shoulder_length
-    left_shoulder_coordinates = keypoints[:, lshoulder_index, :]
-    right_shoulder_coordinates = keypoints[:, rshoulder_index, :]
-    shoulder_length = np.linalg.norm(left_shoulder_coordinates - right_shoulder_coordinates, axis=1)
-    ratio = (desired_shoulder_length / shoulder_length)
-    ratio = ratio[:, np.newaxis, np.newaxis]
-    keypoints = keypoints * ratio
-
-    # Calculate the mean of both shoulders for each frame
-    mean_shoulder_coordinates = (left_shoulder_coordinates + right_shoulder_coordinates) / 2
-
-    # Subtract the mean shoulder coordinates from all keypoints to center each frame
-    centered_keypoints = keypoints - mean_shoulder_coordinates[:, np.newaxis, :]
-    return centered_keypoints
-
 
 
 def normalize_z(zkeypoints, lshoulder_index, rshoulder_index):
@@ -211,6 +170,43 @@ def draw_points(points, normalized=False):
         index += 1
 
     return img
+
+
+def rotate_3d(keypoints):
+    coordinates = np.reshape(keypoints, (-1, 3))
+    npoints = len(keypoints)
+    # Rotation angles in degrees
+    a1, a2, a3 = random.randint(0, 30), random.randint(0, 30), random.randint(0, 30)
+
+    a1_rad, a2_rad, a3_rad = np.radians(a1), np.radians(a2), np.radians(a3)
+
+
+    # Rotation matrices for each axis
+    rot_x = np.array([
+        [1, 0, 0],
+        [0, np.cos(a1_rad), -np.sin(a1_rad)],
+        [0, np.sin(a1_rad), np.cos(a1_rad)],
+    ], dtype=np.float32)
+
+    rot_y = np.array([
+        [np.cos(a2_rad), 0, np.sin(a2_rad)],
+        [0, 1, 0],
+        [-np.sin(a2_rad), 0, np.cos(a2_rad)],
+    ], dtype=np.float32)
+
+    rot_z = np.array([
+        [np.cos(a3_rad), -np.sin(a3_rad), 0],
+        [np.sin(a3_rad), np.cos(a3_rad), 0],
+        [0, 0, 1],
+    ], dtype=np.float32)
+        # Combined rotation matrix
+    
+    rot_matrix = rot_z @ rot_y @ rot_x
+
+    # Apply rotation to the coordinates
+    rotated_coordinates = coordinates @ rot_matrix
+    keypoints = np.reshape(rotated_coordinates, (npoints, -1, 3))
+    return keypoints
 
 
 if __name__ == "__main__":

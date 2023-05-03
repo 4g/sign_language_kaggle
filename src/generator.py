@@ -14,29 +14,27 @@ import numpy as np
 from tqdm import tqdm
 from scipy import interpolate
 
-from keypoint_lib import rotate, zoom, shift, hflip, shear, apply_affine_transforms, normalize_by_shoulders, zflip, normalize_z
+from keypoint_lib import rotate, zoom, shift, shear, apply_affine_transforms, rotate_3d 
 
 class BinaryGenerator(tf.keras.utils.Sequence):
     def __init__(self,
                  data_dir,
-                 batch_size: int = 64,
-                 step_size: int = 64,
-                 shuffle: bool = False,
+                 batch_size = 64,
+                 step_size = 64,
+                 shuffle = False,
                  split_start=0.0,
                  split_end=1.0,
                  oversample=True,
                  augment=True,
                  cache=True,
-                 mode='train'
                  ):
         
-        random.seed(42)    
+        random.seed(42)   
         self.X = None
         self.num_classes = None
         self.labels = None
         self.split_start = split_start
         self.split_end = split_end
-        self.mode = mode
 
 
         self.batch_size = batch_size
@@ -47,6 +45,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         self.cache = {}        
         self.indices = []
         self.enable_cache = cache
+        self.calls = 0
         
         self.load_data(data_dir)
         
@@ -103,11 +102,9 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         # random.shuffle(participants)
 
         start, end = int(self.split_start * len(participants)) , int(self.split_end * len(participants))
-        print(start, end)
         chosen_participants = set(participants[start:end])
-        print(chosen_participants)
         
-        for elem in tqdm(train_data.to_dict(orient='records'), "loading data"):
+        for elem in train_data.to_dict(orient='records'):
             label = elem["sign"]
             label = label_map[label]
             sequence_id = elem["sequence_id"]
@@ -124,9 +121,10 @@ class BinaryGenerator(tf.keras.utils.Sequence):
             self.index_to_label[label_map[label]] = label
 
     def __getitem__(self, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        self.calls += 1
         indices = self.indices[n * self.batch_size: n * self.batch_size + self.batch_size]
-        x_batch = np.zeros((self.batch_size, self.step_size, 543, 3), dtype=np.float16)
-        y_batch = np.zeros((self.batch_size, self.num_classes), dtype=np.float16)
+        x_batch = np.zeros((len(indices), self.step_size, 543, 3), dtype=np.float32)
+        y_batch = np.zeros((len(indices), self.num_classes), dtype=np.float32)
         
 
         for index, rindex in enumerate(indices):
@@ -154,10 +152,9 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         return arr[:desired_length]
 
     def preprocess(self, path):
-       
         if path not in self.cache:
             kps = np.load(path)
-            self.cache[path] = kps.astype(np.float16)
+            self.cache[path] = kps.astype(np.float32)
 
         kps = self.cache[path]
         
@@ -176,10 +173,10 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         aug_perc = 0.35
         aug_strength = 0.3    
 
-        if self.augment and random.random() < aug_perc*2:
+        if self.augment and (random.random() < aug_perc*2):
             if random.random() < 0.5:
                 idx = list(range(len(kps)))
-                if len(idx) < self.step_size:
+                if len(kps) < self.step_size:
                     idx = self.reflect_pad(idx, self.step_size)
                 else:
                     idx = random.sample(list(range(len(kps))), self.step_size)
@@ -199,25 +196,21 @@ class BinaryGenerator(tf.keras.utils.Sequence):
 
         kps = kps[idx]
         
-        
-
         # reverse the video
-        if self.augment and random.random() < aug_perc:
+        if self.augment and (random.random() < aug_perc):
             kps = kps[::-1]
-            
             
         gr = lambda x : (np.random.random() - .5)*2*x
 
-        
         # separate z because it is augmented differently
         zkps = kps[:,:,2:]
         kps = kps[:,:,0:2]
 
 
-        if self.augment and random.random() < aug_perc * 2:
-            kps = hflip(kps)
+        if self.augment and (random.random() < aug_perc * 2):
+            # kps = hflip(kps)
 
-            zkps = zflip(zkps)
+            # zkps = zflip(zkps)
             kps = shift(kps, hratio=gr(aug_strength), vratio=gr(aug_strength))
 
             # affines = [rotate(get_random(0.2))]
@@ -225,6 +218,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
                 affines = [rotate(gr(aug_strength)), zoom(gr(aug_strength), gr(aug_strength)), shear(gr(aug_strength), gr(aug_strength))]
                 kps = apply_affine_transforms(kps, affines)
 
+            
         kpsz = np.concatenate([kps, zkps], axis=-1)
         return kpsz
 
@@ -232,7 +226,7 @@ class BinaryGenerator(tf.keras.utils.Sequence):
         """
         Runs at end of every epoch
         """
-        
+        # print("Cache size", len(self.cache), "calls", self.calls)
         self.rebalance()
 
         if self.shuffle:
